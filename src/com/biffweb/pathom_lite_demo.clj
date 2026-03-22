@@ -47,7 +47,40 @@
     :resolve (fn [_env {:user/keys [name age]}]
                {:user/greeting (str "Hello, " name "! You are " age " years old.")})}))
 
-(def demo-resolvers [user-by-id user-friends user-greeting])
+(def order-by-id
+  (pl/resolver
+   {:name    :order-by-id
+    :input   [:order/id]
+    :output  [:order/total :order/status {:order/user [:user/id]}]
+    :resolve (fn [_env {:order/keys [id]}]
+               (case id
+                 100 {:order/total 59.99 :order/status :shipped :order/user {:user/id 1}}
+                 101 {:order/total 12.50 :order/status :pending :order/user {:user/id 2}}
+                 (throw (ex-info "Order not found" {:order/id id}))))}))
+
+(def user-address
+  (pl/resolver
+   {:name    :user-address
+    :input   [:user/id]
+    :output  [{:user/address [:address/street :address/zip]}]
+    :resolve (fn [_env {:user/keys [id]}]
+               (case id
+                 1 {:user/address {:address/street "123 Main St" :address/zip "10001"}}
+                 2 {:user/address {:address/street "456 Oak Ave" :address/zip "90210"}}
+                 3 {:user/address {:address/street "789 Elm Rd"  :address/zip "60601"}}
+                 (throw (ex-info "Address not found" {:user/id id}))))}))
+
+(def shipping-label
+  (pl/resolver
+   {:name    :shipping-label
+    :input   [{:order/user [:user/name {:user/address [:address/zip]}]}]
+    :output  [:order/shipping-label]
+    :resolve (fn [_env input]
+               (let [user-name (get-in input [:order/user :user/name])
+                     zip       (get-in input [:order/user :user/address :address/zip])]
+                 {:order/shipping-label (str "Ship to: " user-name ", " zip)}))}))
+
+(def demo-resolvers [user-by-id user-friends user-greeting order-by-id user-address shipping-label])
 
 ;; ---------------------------------------------------------------------------
 ;; HTML
@@ -66,6 +99,9 @@
    {:label "Derived resolver (chaining)"
     :entity "{:user/id 2}"
     :query "[:user/greeting]"}
+   {:label "Nested input (shipping label)"
+    :entity "{:order/id 100}"
+    :query "[:order/shipping-label]"}
    {:label "Multiple attributes"
     :entity "{:user/id 3}"
     :query "[:user/name :user/age :user/email]"}])
@@ -113,6 +149,13 @@
     <li><b>:user-by-id</b> — <code>[:user/id]</code> → <code>[:user/name :user/email :user/age]</code></li>
     <li><b>:user-friends</b> — <code>[:user/id]</code> → <code>[{:user/friends [:user/id]}]</code></li>
     <li><b>:user-greeting</b> — <code>[:user/name :user/age]</code> → <code>[:user/greeting]</code> (derived, chains through user-by-id)</li>
+    <li><b>:user-address</b> — <code>[:user/id]</code> → <code>[{:user/address [:address/street :address/zip]}]</code></li>
+    <li><b>:shipping-label</b> — <code>[{:order/user [:user/name {:user/address [:address/zip]}]}]</code> → <code>[:order/shipping-label]</code> (nested input!)</li>
+  </ul>
+  <h3>Orders in DB</h3>
+  <ul>
+    <li>ID 100: $59.99, shipped, user: Alice</li>
+    <li>ID 101: $12.50, pending, user: Bob</li>
   </ul>
   <h3>Users in DB</h3>
   <ul>

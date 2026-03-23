@@ -9,12 +9,12 @@
   - Optional query items ([:? :key] in query vectors)
   - Global resolvers (no input)
   - Var-based resolvers (metadata-driven)
+  - Batch resolvers (process multiple entities at once)
   - Strict mode only (throws on missing data)
 
   Omits (compared to pathom3):
   - Plugin system
   - Lenient mode
-  - Batch resolvers
   - Query planning (uses query directly)
   - EQL AST manipulation")
 
@@ -69,7 +69,7 @@
   "Define a resolver. Accepts either a map or a var.
 
   When given a var:
-  - Uses var metadata for :input and :output
+  - Uses var metadata for :input, :output, and :batch
   - Derives :id from the var's namespace and name
   - Stores the var itself (not the deref'd fn) as :resolve
 
@@ -77,23 +77,28 @@
     :id      - keyword, unique resolver id
     :input   - vector of input specs (keywords, join maps, or optional wrappers)
     :output  - vector of flat keywords this resolver provides
-    :resolve - (fn [ctx input-map] output-map)
+    :resolve - (fn [ctx input-map] output-map), or if :batch is true,
+               (fn [ctx [input-map ...]] [output-map ...])
+    :batch   - (optional) if true, the resolver takes a vector of input maps
+               and returns a vector of output maps in the same order
 
-  Returns a resolver map with keys :id, :input, :output, :resolve."
+  Returns a resolver map with keys :id, :input, :output, :resolve, :batch."
   [resolver-or-map]
   (if (var? resolver-or-map)
     (let [var-meta (meta resolver-or-map)
           id (keyword (str (:ns var-meta)) (str (:name var-meta)))
           input (or (:input var-meta) [])
-          output (or (:output var-meta) [])]
+          output (or (:output var-meta) [])
+          batch (boolean (:batch var-meta))]
       (when (some map? output)
         (throw (ex-info "Resolver :output must be flat keywords, not nested maps"
                         {:resolver id :output output})))
       {:id id
        :input input
        :output output
-       :resolve resolver-or-map})
-    (let [{:keys [id input output resolve]} resolver-or-map]
+       :resolve resolver-or-map
+       :batch batch})
+    (let [{:keys [id input output resolve batch]} resolver-or-map]
       (when-not id
         (throw (ex-info "Resolver must have an :id" {:resolver resolver-or-map})))
       (when-not resolve
@@ -104,7 +109,8 @@
       {:id id
        :input (or input [])
        :output (or output [])
-       :resolve resolve})))
+       :resolve resolve
+       :batch (boolean batch)})))
 
 (defn build-index
   "Build an index from a collection of resolvers (maps or vars).
@@ -129,6 +135,7 @@
 ;; ---------------------------------------------------------------------------
 
 (declare process-query)
+(declare ^:private process-query-batch)
 (declare ^:private resolve-value)
 (declare ^:private resolve-input-map)
 
@@ -147,17 +154,19 @@
                     {:attr attr :value v :context context}))))
 
 (defn- apply-sub-query
-  "Apply a sub-query to a resolved value. The value must be a map or collection of maps."
+  "Apply a sub-query to a resolved value. The value must be a map or collection of maps.
+  For sequential values, uses batch-aware processing."
   [ctx v attr sub-query]
   (ensure-join-value v attr :query)
   (if (map? v)
     (process-query ctx v sub-query)
-    (mapv #(process-query ctx % sub-query) v)))
+    (process-query-batch ctx v sub-query)))
 
 (defn- resolve-value
   "Resolve a raw value for attr from resolver candidates (not from entity).
   `resolving` is a set of attrs currently being resolved (cycle detection).
-  Throws with ::resolve-error on ex-data if resolution fails."
+  Throws with ::resolve-error on ex-data if resolution fails.
+  For batch resolvers, wraps the single input in a vector and unwraps the result."
   [ctx entity attr resolving]
   (if (contains? resolving attr)
     (throw (ex-info (str "Cycle detected while resolving " attr)
@@ -168,7 +177,9 @@
                     (fn [r]
                       (try
                         (let [input-map (resolve-input-map ctx entity (:input r) resolving)
-                              result ((:resolve r) ctx input-map)]
+                              result (if (:batch r)
+                                       (first ((:resolve r) ctx [input-map]))
+                                       ((:resolve r) ctx input-map))]
                           (when (contains? result attr)
                             {:value (get result attr)}))
                         (catch clojure.lang.ExceptionInfo e
@@ -248,6 +259,94 @@
     ;; :keyword — plain attribute
     :else
     [query-item nil false]))
+
+(defn- process-query-batch
+  "Process an EQL query against multiple entities, using batch resolvers where possible.
+  For each query item, checks if a batch resolver is available; if so, resolves all
+  entities in one call. Otherwise falls back to individual resolution.
+  Returns a vector of result maps (one per entity)."
+  [ctx entities query-vec]
+  (reduce
+   (fn [results query-item]
+     (let [[attr sub-query optional?] (normalize-query-item query-item)
+           enriched (mapv merge entities results)
+           candidates (find-resolver-candidates ctx attr)
+           batch-r (first (filter :batch candidates))]
+       (if batch-r
+         ;; --- Batch resolution path ---
+         (let [;; Which entities already have the attr?
+               has-attr? (mapv #(contains? % attr) enriched)
+               need-idxs (into [] (keep-indexed (fn [i has?] (when-not has? i))) has-attr?)]
+           (if (empty? need-idxs)
+             ;; All entities already have the attr
+             (mapv (fn [result enriched-e]
+                     (let [v (get enriched-e attr)]
+                       (assoc result attr (if sub-query
+                                           (apply-sub-query ctx v attr sub-query)
+                                           v))))
+                   results enriched)
+             ;; Some entities need resolution via batch
+             (let [input-maps
+                   (try
+                     (mapv (fn [i] (resolve-input-map ctx (nth enriched i) (:input batch-r) #{}))
+                           need-idxs)
+                     (catch clojure.lang.ExceptionInfo e
+                       (if (and optional? (::resolve-error (ex-data e)))
+                         ::skip
+                         (throw e))))
+
+                   batch-results
+                   (when (not= input-maps ::skip)
+                     ((:resolve batch-r) ctx input-maps))
+
+                   ;; Map from entity-index to batch-result-index
+                   need-idx->batch-idx
+                   (when batch-results
+                     (into {} (map-indexed (fn [bi ei] [ei bi]) need-idxs)))]
+               (mapv
+                (fn [i result enriched-e]
+                  (cond
+                    ;; Entity already had the attr
+                    (contains? enriched-e attr)
+                    (let [v (get enriched-e attr)]
+                      (assoc result attr (if sub-query
+                                          (apply-sub-query ctx v attr sub-query)
+                                          v)))
+
+                    ;; Batch resolver returned a result for this entity
+                    (and need-idx->batch-idx
+                         (contains? need-idx->batch-idx i)
+                         (contains? (nth batch-results (get need-idx->batch-idx i)) attr))
+                    (let [v (get (nth batch-results (get need-idx->batch-idx i)) attr)]
+                      (assoc result attr (if sub-query
+                                          (apply-sub-query ctx v attr sub-query)
+                                          v)))
+
+                    ;; Batch didn't provide attr; fall back to individual resolution
+                    :else
+                    (if optional?
+                      (try
+                        (assoc result attr (resolve-attr ctx enriched-e attr sub-query #{}))
+                        (catch clojure.lang.ExceptionInfo e
+                          (if (::resolve-error (ex-data e))
+                            result
+                            (throw e))))
+                      (assoc result attr (resolve-attr ctx enriched-e attr sub-query #{})))))
+                (range) results enriched))))
+
+         ;; --- Individual resolution path (no batch resolver) ---
+         (mapv (fn [result enriched-e]
+                 (if optional?
+                   (try
+                     (assoc result attr (resolve-attr ctx enriched-e attr sub-query #{}))
+                     (catch clojure.lang.ExceptionInfo e
+                       (if (::resolve-error (ex-data e))
+                         result
+                         (throw e))))
+                   (assoc result attr (resolve-attr ctx enriched-e attr sub-query #{}))))
+               results enriched))))
+   (vec (repeat (count entities) {}))
+   query-vec))
 
 (defn- process-query
   "Process an EQL query against the given entity using the resolver index.

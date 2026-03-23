@@ -12,13 +12,13 @@ This library provides a minimal resolver-based data fetching engine that support
 - **Global resolvers** (no input required)
 - **Var-based resolvers** (metadata-driven, REPL-friendly)
 - **Transitive resolution** — automatically chains resolvers to satisfy dependencies
+- **Batch resolvers** (process multiple entities in one call)
 - **Strict mode** — throws when data can't be resolved
 
 ## What's omitted (vs pathom3)
 
 - Plugin system
 - Lenient mode
-- Batch resolvers
 - Query planning (uses the input query directly)
 - EQL AST manipulation
 
@@ -120,6 +120,41 @@ You can also define resolvers as plain maps:
 
 (def index (biff.pl/build-index [my-resolver]))
 ```
+
+### Batch resolvers
+
+Add `:batch true` to a resolver to make it process multiple entities at once.
+A batch resolver's `:resolve` function receives a vector of input maps and must return
+a vector of output maps in the same order:
+
+```clojure
+(defn users-by-id
+  {:input  [:user/id]
+   :output [:user/name :user/email]
+   :batch  true}
+  [ctx inputs]
+  ;; inputs is e.g. [{:user/id 1} {:user/id 2} {:user/id 3}]
+  ;; Could do a single SQL query: SELECT * FROM users WHERE id IN (1, 2, 3)
+  (mapv (fn [{:user/keys [id]}]
+          (fetch-user id))
+        inputs))
+```
+
+Batch resolvers are automatically used when processing join keys with sequential
+values (e.g. `:user/friends`). Instead of calling the resolver once per element,
+all elements are batched into a single call:
+
+```clojure
+(biff.pl/query {:biff.pathom-lite/index index}
+               {:user/id 1}
+               [{:user/friends [:user/name :user/email]}])
+;; user-friends resolves to [{:user/id 2} {:user/id 3}]
+;; users-by-id is called ONCE with [{:user/id 2} {:user/id 3}]
+;; instead of twice with {:user/id 2} and {:user/id 3} separately
+```
+
+Batch resolvers also work in non-batch contexts (single entity resolution) — the
+library automatically wraps/unwraps the single input.
 
 ### API
 

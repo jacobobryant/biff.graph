@@ -11,6 +11,7 @@ This library provides a minimal resolver-based data fetching engine that support
 - **Optional query items** (`[:? :key]` in query vectors)
 - **Global resolvers** (no input required)
 - **Var-based resolvers** (metadata-driven, REPL-friendly)
+- **Batch resolvers** (process multiple entities at once, breadth-first)
 - **Transitive resolution** — automatically chains resolvers to satisfy dependencies
 - **Strict mode** — throws when data can't be resolved
 
@@ -18,7 +19,6 @@ This library provides a minimal resolver-based data fetching engine that support
 
 - Plugin system
 - Lenient mode
-- Batch resolvers
 - Query planning (uses the input query directly)
 - EQL AST manipulation
 
@@ -106,6 +106,43 @@ Optional joins in queries:
 ```clojure
 [:user/name {[:? :user/extra] [:extra/info]}]
 ```
+
+### Batch resolvers
+
+Add `:batch true` to a resolver to make it accept a vector of input maps and return
+a vector of output maps (in the same order). Batch resolvers are used automatically
+when processing sequential join values (e.g. a list of friends):
+
+```clojure
+(defn user-by-id
+  {:input [:user/id]
+   :output [:user/name :user/email]
+   :batch true}
+  [ctx inputs]
+  ;; inputs is a vector of maps, e.g. [{:user/id 1} {:user/id 2}]
+  (mapv (fn [{:user/keys [id]}]
+          ;; fetch from db in bulk...
+          {:user/name (str "User-" id)
+           :user/email (str "user" id "@example.com")})
+        inputs))
+```
+
+Batch resolvers use **breadth-first traversal**: when a query has nested joins,
+all child entities across all parents at a given depth are collected and processed
+together. This means a batch resolver at depth N is called exactly once for all
+entities at that depth, regardless of how many parents exist.
+
+For example, given this query:
+
+```clojure
+[:a {:b [{:c [:d]}]}]
+```
+
+If `:b` and `:c` resolve to vectors, the batch resolver for `:d` is called once
+with ALL `:c` entities from ALL `:b` parents — not once per `:b` value.
+
+Batch resolvers also work in single-entity contexts (the input is automatically
+wrapped in a vector and the result unwrapped).
 
 ### Map-based resolvers
 

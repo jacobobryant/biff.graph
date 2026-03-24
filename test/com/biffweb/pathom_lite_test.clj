@@ -456,3 +456,205 @@
           ;; and then no other candidate succeeds. Let's verify it gets through.
           (is (or (:custom (ex-data e))
                   (:com.biffweb.pathom-lite/resolve-error (ex-data e)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Batch resolver tests
+;; ---------------------------------------------------------------------------
+
+(def batch-call-counts (atom {}))
+
+(def batch-user-by-id
+  {:id       :batch-user-by-id
+   :input    [:user/id]
+   :output   [:user/name :user/email]
+   :batch    true
+   :resolve  (fn [_ctx inputs]
+               (swap! batch-call-counts update :batch-user-by-id (fnil inc 0))
+               (mapv (fn [{:user/keys [id]}]
+                       (case id
+                         1 {:user/name "Alice" :user/email "alice@example.com"}
+                         2 {:user/name "Bob"   :user/email "bob@example.com"}
+                         3 {:user/name "Carol" :user/email "carol@example.com"}
+                         (throw (ex-info "User not found" {:user/id id}))))
+                     inputs))})
+
+(def batch-user-age
+  {:id       :batch-user-age
+   :input    [:user/id]
+   :output   [:user/age]
+   :batch    true
+   :resolve  (fn [_ctx inputs]
+               (swap! batch-call-counts update :batch-user-age (fnil inc 0))
+               (mapv (fn [{:user/keys [id]}]
+                       (case id
+                         1 {:user/age 30}
+                         2 {:user/age 25}
+                         3 {:user/age 35}
+                         {:user/age nil}))
+                     inputs))})
+
+(deftest batch-resolver-basic-test
+  (testing "Batch resolver works for sequential join values"
+    (reset! batch-call-counts {})
+    (let [idx (pl/build-index [user-friends batch-user-by-id])
+          result (pl/query {:biff.pathom-lite/index idx}
+                           {:user/id 1}
+                           [{:user/friends [:user/name]}])]
+      (is (= {:user/friends [{:user/name "Bob"} {:user/name "Carol"}]}
+             result))
+      (is (= 1 (:batch-user-by-id @batch-call-counts))))))
+
+(deftest batch-resolver-multiple-attrs-test
+  (testing "Batch resolver resolves multiple attributes from same resolver"
+    (reset! batch-call-counts {})
+    (let [idx (pl/build-index [user-friends batch-user-by-id])
+          result (pl/query {:biff.pathom-lite/index idx}
+                           {:user/id 1}
+                           [{:user/friends [:user/name :user/email]}])]
+      (is (= {:user/friends [{:user/name "Bob"   :user/email "bob@example.com"}
+                              {:user/name "Carol" :user/email "carol@example.com"}]}
+             result)))))
+
+(deftest batch-resolver-different-resolvers-test
+  (testing "Multiple batch resolvers for different attrs"
+    (reset! batch-call-counts {})
+    (let [idx (pl/build-index [user-friends batch-user-by-id batch-user-age])
+          result (pl/query {:biff.pathom-lite/index idx}
+                           {:user/id 1}
+                           [{:user/friends [:user/name :user/age]}])]
+      (is (= {:user/friends [{:user/name "Bob"   :user/age 25}
+                              {:user/name "Carol" :user/age 35}]}
+             result))
+      (is (= 1 (:batch-user-by-id @batch-call-counts)))
+      (is (= 1 (:batch-user-age @batch-call-counts))))))
+
+(deftest batch-resolver-deeply-nested-test
+  (testing "Batch resolvers work with deeply nested joins"
+    (reset! batch-call-counts {})
+    (let [idx (pl/build-index [user-friends batch-user-by-id])
+          result (pl/query {:biff.pathom-lite/index idx}
+                           {:user/id 1}
+                           [{:user/friends [:user/name {:user/friends [:user/name]}]}])]
+      (is (= {:user/friends [{:user/name "Bob"
+                               :user/friends [{:user/name "Alice"}]}
+                              {:user/name "Carol"
+                               :user/friends [{:user/name "Alice"} {:user/name "Bob"}]}]}
+             result)))))
+
+(deftest batch-resolver-cross-tree-test
+  (testing "Breadth-first batching: batch resolver called once for ALL grandchildren"
+    (reset! batch-call-counts {})
+    (let [idx (pl/build-index [user-friends batch-user-by-id])
+          result (pl/query {:biff.pathom-lite/index idx}
+                           {:user/id 1}
+                           [{:user/friends [{:user/friends [:user/name]}]}])]
+      ;; User 1's friends are [2, 3]
+      ;; User 2's friends are [1], User 3's friends are [1, 2]
+      ;; Grandchildren are [1, 1, 2] - all processed in ONE batch call
+      (is (= {:user/friends [{:user/friends [{:user/name "Alice"}]}
+                              {:user/friends [{:user/name "Alice"} {:user/name "Bob"}]}]}
+             result))
+      ;; Key assertion: batch resolver called exactly once for ALL grandchildren
+      ;; (not once per friend). This is the breadth-first advantage.
+      ;; The user-friends resolver (non-batch) handles the friends level,
+      ;; and batch-user-by-id is called once for all 3 grandchild entities.
+      (is (= 1 (:batch-user-by-id @batch-call-counts))))))
+
+(deftest batch-resolver-single-entity-fallback-test
+  (testing "Batch resolver works for individual entity resolution (non-join context)"
+    (let [idx (pl/build-index [batch-user-by-id])
+          result (pl/query {:biff.pathom-lite/index idx}
+                           {:user/id 1}
+                           [:user/name :user/email])]
+      (is (= {:user/name "Alice" :user/email "alice@example.com"}
+             result)))))
+
+(deftest batch-resolver-with-entity-passthrough-test
+  (testing "Entities that already have the attr skip batch resolution"
+    (reset! batch-call-counts {})
+    (let [idx (pl/build-index [batch-user-by-id])
+          result (pl/query {:biff.pathom-lite/index idx}
+                           {:user/id 1 :user/name "Override"}
+                           [:user/name])]
+      (is (= {:user/name "Override"} result)))))
+
+(deftest batch-resolver-mixed-with-non-batch-test
+  (testing "Batch and non-batch resolvers coexist in the same index"
+    (reset! batch-call-counts {})
+    (let [idx (pl/build-index [user-friends batch-user-by-id user-age])
+          result (pl/query {:biff.pathom-lite/index idx}
+                           {:user/id 1}
+                           [{:user/friends [:user/name :user/age]}])]
+      (is (= {:user/friends [{:user/name "Bob"   :user/age 25}
+                              {:user/name "Carol" :user/age 35}]}
+             result))
+      (is (= 1 (:batch-user-by-id @batch-call-counts))))))
+
+(deftest batch-resolver-empty-collection-test
+  (testing "Batch resolver handles empty collection gracefully"
+    (let [empty-friends {:id       :empty-friends
+                         :input    [:user/id]
+                         :output   [:user/friends]
+                         :resolve  (fn [_ctx _input] {:user/friends []})}
+          idx (pl/build-index [empty-friends batch-user-by-id])]
+      (is (= {:user/friends []}
+             (pl/query {:biff.pathom-lite/index idx}
+                       {:user/id 99}
+                       [{:user/friends [:user/name]}]))))))
+
+(deftest batch-resolver-with-sub-query-test
+  (testing "Batch resolver result can have sub-query applied"
+    (let [idx (pl/build-index [user-friends
+                               batch-user-by-id
+                               user-address])
+          result (pl/query {:biff.pathom-lite/index idx}
+                           {:user/id 1}
+                           [{:user/friends [:user/name {:user/address [:address/zip]}]}])]
+      (is (= {:user/friends [{:user/name "Bob"
+                               :user/address {:address/zip "90210"}}
+                              {:user/name "Carol"
+                               :user/address {:address/zip "60601"}}]}
+             result)))))
+
+(deftest batch-resolver-optional-query-item-test
+  (testing "Optional query items work with batch resolution"
+    (let [idx (pl/build-index [user-friends batch-user-by-id])
+          result (pl/query {:biff.pathom-lite/index idx}
+                           {:user/id 1}
+                           [{:user/friends [:user/name [:? :nonexistent/attr]]}])]
+      (is (= {:user/friends [{:user/name "Bob"} {:user/name "Carol"}]}
+             result)))))
+
+(defn batch-var-user-by-id
+  {:input  [:user/id]
+   :output [:user/name :user/email]
+   :batch  true}
+  [_ctx inputs]
+  (mapv (fn [{:user/keys [id]}]
+          (case id
+            1 {:user/name "Alice" :user/email "alice@example.com"}
+            2 {:user/name "Bob"   :user/email "bob@example.com"}
+            3 {:user/name "Carol" :user/email "carol@example.com"}
+            (throw (ex-info "User not found" {:user/id id}))))
+        inputs))
+
+(deftest batch-var-resolver-test
+  (testing "Var-based batch resolver reads :batch from metadata"
+    (let [r (pl/resolver #'batch-var-user-by-id)]
+      (is (true? (:batch r)))
+      (is (= :com.biffweb.pathom-lite-test/batch-var-user-by-id (:id r))))))
+
+(deftest batch-var-resolver-query-test
+  (testing "Var-based batch resolver works in queries"
+    (let [idx (pl/build-index [user-friends #'batch-var-user-by-id])
+          result (pl/query {:biff.pathom-lite/index idx}
+                           {:user/id 1}
+                           [{:user/friends [:user/name]}])]
+      (is (= {:user/friends [{:user/name "Bob"} {:user/name "Carol"}]}
+             result)))))
+
+(deftest batch-resolver-build-index-test
+  (testing "build-index preserves :batch flag"
+    (let [idx (pl/build-index [batch-user-by-id user-by-id])]
+      (is (true? (:batch (first (filter :batch (:all-resolvers idx))))))
+      (is (false? (:batch (first (remove :batch (:all-resolvers idx)))))))))

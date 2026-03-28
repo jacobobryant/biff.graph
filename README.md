@@ -1,4 +1,6 @@
-# biff-inject
+# biff-inject (alpha)
+
+NOTE: this whole thing so far has been entirely ai-generated (except for this paragraph). I need to make a pass over it before it's ready to be officially released.
 
 A lightweight alternative to [pathom3](https://pathom3.wsscode.com/) for Clojure.
 

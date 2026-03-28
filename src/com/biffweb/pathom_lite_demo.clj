@@ -23,10 +23,13 @@
 
 (defn user-by-id
   {:input  [:user/id]
-   :output [:user/name :user/email :user/age]}
-  [_ctx {:user/keys [id]}]
-  (or (get users-db id)
-      (throw (ex-info "User not found" {:user/id id}))))
+   :output [:user/name :user/email :user/age]
+   :batch  true}
+  [_ctx inputs]
+  (mapv (fn [{:user/keys [id]}]
+          (or (get users-db id)
+              (throw (ex-info "User not found" {:user/id id}))))
+        inputs))
 
 (defn user-friends
   {:input  [:user/id]
@@ -97,7 +100,13 @@
     :query "[:user/name [:? :nonexistent/attr]]"}
    {:label "Multiple attributes"
     :entity "{:user/id 3}"
-    :query "[:user/name :user/age :user/email]"}])
+    :query "[:user/name :user/age :user/email]"}
+   {:label "Batch resolver (friends)"
+    :entity "{:user/id 1}"
+    :query "[:user/name {:user/friends [:user/name :user/email]}]"}
+   {:label "Cross-tree batch (grandchildren)"
+    :entity "{:user/id 1}"
+    :query "[{:user/friends [{:user/friends [:user/name]}]}]"}])
 
 (defn html-page [result-html entity-val query-val]
   (str
@@ -139,7 +148,7 @@
    "<div class='card'>
   <h3>Available Resolvers</h3>
   <ul>
-    <li><b>user-by-id</b> — <code>[:user/id]</code> → <code>[:user/name :user/email :user/age]</code></li>
+    <li><b>user-by-id</b> (batch) — <code>[:user/id]</code> → <code>[:user/name :user/email :user/age]</code></li>
     <li><b>user-friends</b> — <code>[:user/id]</code> → <code>[:user/friends]</code></li>
     <li><b>user-greeting</b> — <code>[:user/name :user/age]</code> → <code>[:user/greeting]</code> (derived, chains through user-by-id)</li>
     <li><b>user-address</b> — <code>[:user/id]</code> → <code>[:user/address]</code></li>

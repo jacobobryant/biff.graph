@@ -1,4 +1,4 @@
-# biff-pathom-lite
+# biff-inject
 
 A lightweight alternative to [pathom3](https://pathom3.wsscode.com/) for Clojure.
 
@@ -27,7 +27,7 @@ This library provides a minimal resolver-based data fetching engine that support
 Add to your `deps.edn`:
 
 ```clojure
-{:deps {com.biffweb/pathom-lite {:git/url "https://github.com/jacobobryant/biff-pathom-lite"
+{:deps {com.biffweb/inject {:git/url "https://github.com/jacobobryant/biff-pathom-lite"
                                   :git/sha "..."}}}
 ```
 
@@ -36,7 +36,7 @@ Add to your `deps.edn`:
 Define resolvers as regular functions with metadata:
 
 ```clojure
-(require '[com.biffweb.pathom-lite :as biff.pl])
+(require '[com.biffweb.inject :as biff.inject])
 
 (defn user-by-id
   {:input [:user/id]
@@ -55,13 +55,13 @@ Define resolvers as regular functions with metadata:
 ### Build an index
 
 ```clojure
-(def index (biff.pl/build-index [#'user-by-id #'user-friends]))
+(def index (biff.inject/build-index [#'user-by-id #'user-friends]))
 ```
 
 ### Run a query
 
 ```clojure
-(biff.pl/query {:biff.pathom-lite/index index}
+(biff.inject/query {:biff.inject/index index}
                {:user/id 1}
                [:user/name {:user/friends [:user/name]}])
 ;; => {:user/name "Alice"
@@ -95,7 +95,7 @@ You can also mark query items as optional. When a query item can't be resolved,
 it is simply omitted from the result instead of throwing:
 
 ```clojure
-(biff.pl/query {:biff.pathom-lite/index index}
+(biff.inject/query {:biff.inject/index index}
                {:user/id 1}
                [:user/name [:? :user/nickname]])
 ;; => {:user/name "Alice"}  ; :user/nickname omitted if no resolver
@@ -155,7 +155,7 @@ You can also define resolvers as plain maps:
    :output  [:some/output]
    :resolve (fn [ctx input] {:some/output "value"})})
 
-(def index (biff.pl/build-index [my-resolver]))
+(def index (biff.inject/build-index [my-resolver]))
 ```
 
 ### Batch querying (vector of entities)
@@ -165,7 +165,7 @@ a vector, it returns a vector of result maps — and uses batch resolvers to pro
 all entities efficiently:
 
 ```clojure
-(biff.pl/query {:biff.pathom-lite/index index}
+(biff.inject/query {:biff.inject/index index}
                [{:user/id 1} {:user/id 2} {:user/id 3}]
                [:user/name])
 ;; => [{:user/name "Alice"} {:user/name "Bob"} {:user/name "Carol"}]
@@ -175,11 +175,11 @@ all entities efficiently:
 
 | Function            | Description                                                     |
 |--------------------|-----------------------------------------------------------------|
-| `biff.pl/build-index` | Build an index from a collection of resolvers (vars or maps) |
-| `biff.pl/query`       | Run an EQL query: `(query ctx entity-or-entities query-vec)`  |
-| `biff.pl/resolver`    | Normalize a resolver (var or map) into a resolver map         |
+| `biff.inject/build-index` | Build an index from a collection of resolvers (vars or maps) |
+| `biff.inject/query`       | Run an EQL query: `(query ctx entity-or-entities query-vec)`  |
+| `biff.inject/resolver`    | Normalize a resolver (var or map) into a resolver map         |
 
-The context map (`ctx`) passed to `query` must include `:biff.pathom-lite/index`
+The context map (`ctx`) passed to `query` must include `:biff.inject/index`
 (the result of `build-index`). Any other keys in ctx are passed through to resolver
 functions.
 

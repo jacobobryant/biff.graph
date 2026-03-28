@@ -1,6 +1,6 @@
-(ns com.biffweb.pathom-lite-demo
-  "A small web demo for com.biffweb.pathom-lite. Run with: clojure -M -m com.biffweb.pathom-lite-demo"
-  (:require [com.biffweb.pathom-lite :as biff.pl]
+(ns com.biffweb.inject-demo
+  "A small web demo for com.biffweb.inject. Run with: clojure -M -m com.biffweb.inject-demo"
+  (:require [com.biffweb.inject :as biff.inject]
             [clojure.string :as str]
             [clojure.edn :as edn])
   (:import [com.sun.net.httpserver HttpServer HttpHandler]
@@ -72,7 +72,7 @@
     {:order/shipping-label (str "Ship to: " user-name ", " zip)}))
 
 (def demo-index
-  (biff.pl/build-index [#'user-by-id #'user-friends #'user-greeting
+  (biff.inject/build-index [#'user-by-id #'user-friends #'user-greeting
                          #'order-by-id #'user-address #'shipping-label]))
 
 ;; ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@
 
 (defn html-page [result-html entity-val query-val]
   (str
-   "<!DOCTYPE html><html><head><meta charset='utf-8'><title>pathom-lite demo</title>
+   "<!DOCTYPE html><html><head><meta charset='utf-8'><title>inject demo</title>
 <style>
   body { font-family: system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; background: #f8f9fa; color: #333; }
   h1 { color: #1a1a2e; }
@@ -124,7 +124,7 @@
   .examples button:hover { background: #dee2e6; }
   label { font-weight: bold; display: block; margin: 10px 0 5px; }
 </style></head><body>
-<h1>\uD83D\uDD25 pathom-lite demo</h1>
+<h1>\uD83D\uDD25 inject demo</h1>
 <p>A lightweight alternative to <a href='https://pathom3.wsscode.com/'>pathom3</a>. Try running some EQL queries!</p>
 <div class='card'>
   <h3>Try an example:</h3>
@@ -184,7 +184,7 @@
   (try
     (let [entity (edn/read-string entity-str)
           query  (edn/read-string query-str)
-          result (biff.pl/query {:biff.pathom-lite/index demo-index}
+          result (biff.inject/query {:biff.inject/index demo-index}
                                 entity
                                 query)]
       (str "<pre>" (pr-str result) "</pre>"))
@@ -239,4 +239,4 @@
                                           (.write os body))))))))
     (.setExecutor server nil)
     (.start server)
-    (println (str "pathom-lite demo running on http://localhost:" port))))
+    (println (str "inject demo running on http://localhost:" port))))

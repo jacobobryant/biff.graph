@@ -119,9 +119,8 @@
 
 (deftest get-index-test
   (let [modules-var (atom [{:biff.graph/resolvers [user-by-id]}])
-        middleware-var (atom [])
         get-index (:biff.graph/get-index
-                   ((:biff/init (graph/module {:middleware-var middleware-var}))
+                   ((:biff/init (graph/module))
                     modules-var))
         index-1 (get-index)
         index-2 (get-index)]
@@ -130,7 +129,7 @@
                         {:user/id 1}
                         [:user/name])))
     (is (identical? index-1 index-2))
-    (reset! middleware-var [(fn [resolver] resolver)])
+    (swap! modules-var conj {:biff.graph/middleware [(fn [resolver] resolver)]})
     (is (not (identical? index-1 (get-index))))))
 
 (deftest global-resolver-test

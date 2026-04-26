@@ -194,14 +194,14 @@
               middleware (conj :middleware middleware))))))
 
 (defn module
-  [{:keys [middleware-var]}]
+  []
   {:biff/init
    (fn [modules-var]
-     {:biff.graph/get-index
-      (fn []
-        (index-for-inputs @modules-var
-                          (when middleware-var
-                            @middleware-var)))})})
+      {:biff.graph/get-index
+       (fn []
+         (index-for-inputs
+          @modules-var
+          (not-empty (vec (mapcat :biff.graph/middleware @modules-var)))))})})
 
 ;; ---------------------------------------------------------------------------
 ;; Query engine

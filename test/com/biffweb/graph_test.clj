@@ -1,5 +1,6 @@
 (ns com.biffweb.graph-test
   (:require [clojure.test :refer [deftest is testing]]
+            [com.biffweb.fx :as fx]
             [com.biffweb.graph :as graph]))
 
 ;; ---------------------------------------------------------------------------
@@ -129,8 +130,72 @@
                         {:user/id 1}
                         [:user/name])))
     (is (identical? index-1 index-2))
-    (swap! modules-var conj {:biff.graph/middleware [(fn [resolver] resolver)]})
-    (is (not (identical? index-1 (get-index))))))
+     (swap! modules-var conj {:biff.graph/middleware [(fn [resolver] resolver)]})
+     (is (not (identical? index-1 (get-index))))))
+
+(deftest handle-query-effect-test
+  (is (= {:user/name "Alice"}
+         (fx/handle :biff.graph.fx/query
+                    {:biff.graph/index index}
+                    {:user/id 1}
+                    [:user/name]))))
+
+(graph/defresolver test-resolver
+  {:input [:x]
+   :output [:y]}
+  [ctx {:keys [x]}]
+  {:y (* x 2)})
+
+(deftest defresolver-creates-var-with-metadata
+  (is (fn? test-resolver))
+  (is (= [:x] (:input (meta #'test-resolver))))
+  (is (= [:y] (:output (meta #'test-resolver)))))
+
+(deftest defresolver-runs-as-resolver
+  (is (= {:y 10}
+         (test-resolver {} {:x 5}))))
+
+(graph/defresolver effectful-resolver
+  {:input [:id]
+   :output [:data]}
+  [ctx {:keys [id]}]
+  {:data [:com.biffweb.graph-test/load id]})
+
+(deftest defresolver-runs-effects
+  (is (= {:data {:loaded 42}}
+         (effectful-resolver
+          {:biff.fx/overrides {:com.biffweb.graph-test/load (fn [_ id] {:loaded id})}}
+          {:id 42}))))
+
+(graph/defresolver multi-state-resolver
+  {:input [:id]
+   :output [:result]}
+  [ctx {:keys [id]}]
+  {:raw [:com.biffweb.graph-test/load id]
+   :biff.fx/next :process}
+
+  :process
+  (fn [{:keys [raw]}]
+    {:result (str "processed-" raw)}))
+
+(deftest defresolver-with-multiple-states
+  (is (= {:result "processed-data"}
+         (multi-state-resolver
+          {:biff.fx/overrides {:com.biffweb.graph-test/load (fn [_ _] "data")}}
+          {:id 1}))))
+
+(graph/defresolver no-input-resolver
+  {:output [:global-val]}
+  [ctx _]
+  {:global-val 42})
+
+(deftest defresolver-omits-empty-input
+  (is (nil? (:input (meta #'no-input-resolver))))
+  (is (= [:global-val] (:output (meta #'no-input-resolver)))))
+
+(deftest defresolver-no-input-runs
+  (is (= {:global-val 42}
+         (no-input-resolver {} {}))))
 
 (deftest global-resolver-test
   (testing "Global resolver (no input) provides seed data"

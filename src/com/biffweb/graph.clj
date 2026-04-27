@@ -17,7 +17,8 @@
   - Plugin system
   - Lenient mode
   - Query planning (uses query directly)
-  - EQL AST manipulation")
+  - EQL AST manipulation"
+  (:require [com.biffweb.fx :as fx]))
 
 ;; ---------------------------------------------------------------------------
 ;; Input helpers
@@ -201,6 +202,29 @@
       {:biff.graph/get-index
        (fn []
          (index-for-modules @modules-var))})})
+
+(defmacro defresolver
+  "Defines a resolver backed by a biff.fx machine.
+
+   The first form after the parameter vector is the main resolver body.
+   Remaining keyword/fn pairs (if any) define additional machine states."
+  {:arglists '([sym opts-map [ctx input] body & states])}
+  [sym opts & args]
+  (let [{:keys [input output]} opts
+        [params body & state-kvs] args
+        machine-name (keyword (str *ns*) (str sym))
+        ctx-sym (first params)
+        input-sym (second params)]
+    `(let [start-fn# (fn [~ctx-sym ~input-sym] ~body)
+           machine# (fx/machine ~machine-name
+                      :start (fn [{resolver-input# :biff.fx/resolver-input :as ctx#}]
+                               (start-fn# ctx# resolver-input#))
+                      ~@state-kvs)]
+       (defn ~sym
+         ~(merge (when (seq input) {:input input})
+                 {:output output})
+         [ctx# input#]
+         (machine# (assoc ctx# :biff.fx/resolver-input input#))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Query engine
@@ -425,11 +449,15 @@
           is-vec? (sequential? entity-or-entities)
           entities (if is-vec? (vec entity-or-entities) [(or entity-or-entities {})])
           results (process-entities ctx entities query-vec #{})]
-     (doseq [r results]
-       (when (unresolved-result? r)
-         (throw (ex-info (str "No resolver found for attribute " (::failed-attr r)
-                              " with available inputs " (::available-keys r))
-                         {::resolve-error true
-                          :attr (::failed-attr r)
-                          :available-keys (::available-keys r)}))))
-     (if is-vec? results (first results)))))
+      (doseq [r results]
+        (when (unresolved-result? r)
+          (throw (ex-info (str "No resolver found for attribute " (::failed-attr r)
+                               " with available inputs " (::available-keys r))
+                          {::resolve-error true
+                           :attr (::failed-attr r)
+                           :available-keys (::available-keys r)}))))
+      (if is-vec? results (first results)))))
+
+(defmethod fx/handle :biff.graph.fx/query
+  [_fx-key ctx & args]
+  (apply query ctx args))

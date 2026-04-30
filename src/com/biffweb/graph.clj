@@ -194,14 +194,6 @@
               (cond-> []
                 middleware (conj :middleware middleware)))))))
 
-(defn module
-  []
-  {:biff/init
-   (fn [modules-var]
-     {:biff.graph/get-index
-      (fn []
-        (index-for-modules @modules-var))})})
-
 ;; ---------------------------------------------------------------------------
 ;; Query engine
 ;; ---------------------------------------------------------------------------
@@ -429,7 +421,19 @@
        (when (unresolved-result? r)
          (throw (ex-info (str "No resolver found for attribute " (::failed-attr r)
                               " with available inputs " (::available-keys r))
-                         {::resolve-error true
-                          :attr (::failed-attr r)
-                          :available-keys (::available-keys r)}))))
+                          {::resolve-error true
+                           :attr (::failed-attr r)
+                           :available-keys (::available-keys r)}))))
      (if is-vec? results (first results)))))
+
+(def fx-handlers
+  {:biff.graph.fx/query #'query})
+
+(defn module
+  []
+  {:biff.core/init
+   (fn [modules-var]
+     {:biff.graph/get-index
+      (fn []
+        (index-for-modules @modules-var))})
+   :biff.fx/handlers fx-handlers})

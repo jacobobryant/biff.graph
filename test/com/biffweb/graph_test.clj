@@ -120,7 +120,7 @@
 (deftest get-index-test
   (let [modules-var (atom [{:biff.graph/resolvers [user-by-id]}])
         get-index (:biff.graph/get-index
-                   ((:biff/init (graph/module))
+                   ((:biff.core/init (graph/module))
                     modules-var))
         index-1 (get-index)
         index-2 (get-index)]
@@ -130,7 +130,11 @@
                         [:user/name])))
     (is (identical? index-1 index-2))
     (swap! modules-var conj {:biff.graph/middleware [(fn [resolver] resolver)]})
-    (is (not (identical? index-1 (get-index))))))
+     (is (not (identical? index-1 (get-index))))))
+
+(deftest module-exposes-query-fx-handler
+  (is (= {:biff.graph.fx/query #'graph/query}
+         (:biff.fx/handlers (graph/module)))))
 
 (deftest global-resolver-test
   (testing "Global resolver (no input) provides seed data"
